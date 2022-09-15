@@ -1,0 +1,10 @@
+[package]
+name = "trolloc"
+version = "0.1.0"
+authors = ["Elsklivet <gavinmajetich@gmail.com>"]
+edition = "2021"
+license-file = "LICENSE.txt"
+readme = "README.md"
+keywords = ["troll","malloc","memory allocator"]
+
+[dependencies]
