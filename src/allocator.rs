@@ -185,7 +185,7 @@ unsafe impl GlobalAlloc for Trollocator {
 
     /// Allocate a block.
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        malloc(layout.size())
+        (self.first_block as usize + 16) as *mut u8
     }
 
     /// Deallocate a block.
