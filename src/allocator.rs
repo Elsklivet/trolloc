@@ -8,6 +8,8 @@ extern crate core;
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+const MAX_HEAP_SIZE: usize = 2048;
+
 // use libc::malloc;
 use core::{alloc::{GlobalAlloc, Layout}, mem::{align_of, self}, ptr::*};
 
@@ -18,7 +20,7 @@ extern "C" {
     pub fn free(ptr: *mut u8);
 }
 
-type BlockPointer = *mut u8;
+type BlockPointer = *mut Block;
 
 struct BlockHeader {
     size: usize,
@@ -53,6 +55,8 @@ pub struct Trollocator {
     first_block: BlockPointer,
     /// Explicitly linked free list
     free_list: FreeList,
+    /// Whether the heap has been initialized yet
+    initialized: bool,
 }
 
 unsafe impl Sync for Trollocator {}
@@ -69,6 +73,7 @@ impl Trollocator {
             free_list: FreeList {
                 free_list_head: 0 as *mut _,
             },
+            initialized: false,
         }
     }
 
@@ -94,11 +99,16 @@ impl Trollocator {
     /// Initialize the heap
     pub unsafe fn heap_init(&mut self) { 
         // Initialize heap
+        self.initialized = true;
         self.first_block = malloc(self.heap_size) as BlockPointer;
+        (*(self.first_block)).header = BlockHeader {
+            size: self.heap_size,
+            prev: 0 as *mut Block,
+        };
     }
 
     pub unsafe fn heap_destroy(&mut self) {
-        free(self.first_block);
+        free(self.first_block as *mut u8);
     }
 
     /// Add a memory region to the free list
