@@ -14,3 +14,14 @@ pub mod allocator;
 mod tests;
 
 use allocator::*;
+
+/// Generates a random number using xorshift
+/// 
+/// Credit: Marsaglia, "Xorshift RNGs", https://www.jstatsoft.org/article/view/v008i14
+fn xorshift(state: usize) -> usize {
+    let mut x = state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    x
+}

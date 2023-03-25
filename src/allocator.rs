@@ -8,10 +8,10 @@ extern crate core;
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-const MAX_HEAP_SIZE: usize = 2048;
+const MAX_HEAP_SIZE: usize = 4096;
 
 // use libc::malloc;
-use core::{alloc::{GlobalAlloc, Layout}, mem::{align_of, self}, ptr::*};
+use core::{alloc::{GlobalAlloc, Layout}, mem::{align_of, self}, ptr::*, panic};
 
 #[link(name = "msvcrt")]
 #[link(name = "libcmt")]
@@ -52,7 +52,9 @@ pub struct Trollocator {
     /// Size of the heap in bytes
     heap_size: usize,
     /// First block in the heap
-    first_block: BlockPointer,
+    heap: [u8; MAX_HEAP_SIZE],
+    /// Pointer to the next free space
+    next_free: *mut u8,
     /// Explicitly linked free list
     free_list: FreeList,
     /// Whether the heap has been initialized yet
@@ -68,8 +70,9 @@ impl Trollocator {
     /// Returns a trollocator instance with a zero heap size, no first block, and an empty free list.
     pub const fn new() -> Self {
         Trollocator {
-            heap_size: 2048,
-            first_block: 0 as *mut _,
+            heap_size: MAX_HEAP_SIZE,
+            heap: [0; MAX_HEAP_SIZE],
+            next_free: 0 as *mut u8,
             free_list: FreeList {
                 free_list_head: 0 as *mut _,
             },
@@ -79,8 +82,8 @@ impl Trollocator {
 
     /// Get the heap start
     pub fn heap_start(&self) -> usize {
-        // First address of this allocator is the heap start
-        self as *const Self as usize
+        // First address of the internal heap is the heap start
+        self.heap.as_ptr() as usize
     }
 
     /// Get the heap end
@@ -100,15 +103,16 @@ impl Trollocator {
     pub unsafe fn heap_init(&mut self) { 
         // Initialize heap
         self.initialized = true;
-        self.first_block = malloc(self.heap_size) as BlockPointer;
-        (*(self.first_block)).header = BlockHeader {
-            size: self.heap_size,
-            prev: 0 as *mut Block,
-        };
+        self.next_free = self.heap.as_mut_ptr();
+        // self.first_block = malloc(self.heap_size) as BlockPointer;
+        // (*(self.first_block)).header = BlockHeader {
+        //     size: self.heap_size,
+        //     prev: 0 as *mut Block,
+        // };
     }
 
     pub unsafe fn heap_destroy(&mut self) {
-        free(self.first_block as *mut u8);
+        // free(self.first_block as *mut u8);
     }
 
     /// Add a memory region to the free list
@@ -129,6 +133,21 @@ impl Trollocator {
             lyt.size().max(mem::size_of::<Block>()),
             lyt.align()
         )
+    }
+
+    /// Actual malloc function, because I cannot make global alloc work
+    pub unsafe fn malloc(&mut self, layout: core::alloc::Layout) -> *mut u8 {
+        let ptr = self.next_free;
+        let req_size = layout.size();
+        let req_align = layout.align();
+
+        if self.next_free as usize + req_size > self.heap_end() {
+            panic!("Out of memory!");
+        }
+
+        self.next_free = (self.next_free as usize + req_size) as *mut u8;
+
+        ptr
     }
 
 }
@@ -185,11 +204,11 @@ unsafe impl GlobalAlloc for Trollocator {
 
     /// Allocate a block.
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        (self.first_block as usize + 16) as *mut u8
+        self.next_free
     }
 
     /// Deallocate a block.
     unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
-        free(ptr);
+
     }
 }

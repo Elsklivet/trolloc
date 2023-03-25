@@ -15,12 +15,11 @@ mod tests {
         // let s = format!("lol");
         // assert_eq!(s, "lol");
         unsafe {
-            for _ in 0..=100000 { 
-                let bingus = ALLOCATOR.alloc(Layout::from_size_align_unchecked(32, 8));
-                *bingus = 5;
-                let bongus = ALLOCATOR.alloc(Layout::from_size_align_unchecked(32, 8));
-                assert_eq!(5, *bongus);
-            }
+            let bingus = ALLOCATOR.malloc(Layout::from_size_align_unchecked(core::mem::size_of::<u8>(), 8));
+            *bingus = 5u8;
+            let bongus = ALLOCATOR.malloc(Layout::from_size_align_unchecked(core::mem::size_of::<u8>(), 8));
+            *bongus = 6u8;
+            assert_eq!(5u8, *bingus);
         }
         unsafe { ALLOCATOR.heap_destroy(); }
     }
