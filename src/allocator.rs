@@ -8,10 +8,13 @@ extern crate core;
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+const HEADER_SIZE: usize = core::mem::size_of::<BlockHeader>();
+const MIN_BLOCK_SIZE: usize = core::mem::size_of::<Block>();
 const MAX_HEAP_SIZE: usize = 4096;
+pub(crate) const ALIGNMENT: usize = 8;
 
 // use libc::malloc;
-use core::{alloc::{GlobalAlloc, Layout}, mem::{align_of, self}, ptr::*, panic};
+use core::{alloc::{Layout}, mem::{align_of, self}, ptr::*, panic};
 
 #[link(name = "msvcrt")]
 #[link(name = "libcmt")]
@@ -22,11 +25,17 @@ extern "C" {
 
 type BlockPointer = *mut Block;
 
+/// Block header
 struct BlockHeader {
+    /// Leasable size of this block
     size: usize,
+    /// Pointer to previous physical block
     prev: BlockPointer,
+    /// Whether block is currently free
+    free: bool,
 }
 
+/// Free list linkage pointers, overlaps payload space.
 struct FreeNode {
     /// Previous free block
     prev: BlockPointer,
@@ -34,15 +43,12 @@ struct FreeNode {
     next: BlockPointer,
 }
 
+/// Smallest unit of allocator
 pub struct Block {
+    /// Header data, including size and pointer to previous block start.
     header: BlockHeader,
     /// Pointers for free blocks
-    // TODO: Make this overlap payload space
     free_node: FreeNode,
-}
-
-struct FreeList {
-    free_list_head: BlockPointer,
 }
 
 /// Core allocator struct
@@ -56,7 +62,7 @@ pub struct Trollocator {
     /// Pointer to the next free space
     next_free: *mut u8,
     /// Explicitly linked free list
-    free_list: FreeList,
+    free_list_head: BlockPointer,
     /// Whether the heap has been initialized yet
     initialized: bool,
 }
@@ -72,10 +78,8 @@ impl Trollocator {
         Trollocator {
             heap_size: MAX_HEAP_SIZE,
             heap: [0; MAX_HEAP_SIZE],
-            next_free: 0 as *mut u8,
-            free_list: FreeList {
-                free_list_head: 0 as *mut _,
-            },
+            next_free: core::ptr::null_mut(),
+            free_list_head: core::ptr::null_mut(),
             initialized: false,
         }
     }
@@ -92,32 +96,102 @@ impl Trollocator {
         self.heap_start() + self.heap_size
     }
 
-    /// Search the free list for a spot that fits
-    /// 
-    /// Returns a pointer to the block that we are going to allocate as well as its actual start address
-    pub fn search_free_list(&mut self, size: usize, alignment: usize) -> Option<(BlockPointer, usize)> {
-        todo!()
-    }
-
     /// Initialize the heap
     pub unsafe fn heap_init(&mut self) { 
         // Initialize heap
         self.initialized = true;
+
+        // Make entire heap into one block
+        *(Self::as_block_ptr(self.heap.as_mut_ptr() as usize)) = Block {
+            header: BlockHeader { size: self.heap_size - HEADER_SIZE, prev: core::ptr::null_mut(), free: true },
+            free_node: FreeNode { prev: core::ptr::null_mut(), next: core::ptr::null_mut() }
+        };
+
+        // Add block to the free list so it can be returned in a malloc call
+        // This is *actually* unsafe, double-mutable-borrowing the heap. 
+        self.free_list_add(self.heap.as_ptr() as BlockPointer);
+        
         self.next_free = self.heap.as_mut_ptr();
-        // self.first_block = malloc(self.heap_size) as BlockPointer;
-        // (*(self.first_block)).header = BlockHeader {
-        //     size: self.heap_size,
-        //     prev: 0 as *mut Block,
-        // };
     }
 
+    /// Heap teardown
     pub unsafe fn heap_destroy(&mut self) {
         // free(self.first_block as *mut u8);
     }
 
-    /// Add a memory region to the free list
-    unsafe fn free_list_add(&mut self, address: usize, size: usize) {
+    /// Coalesce around a block
+    fn coalesce(block: BlockPointer) {
         todo!()
+    }
+
+    /// Check whether a block fits a request size or not.
+    unsafe fn block_fits(block: BlockPointer, size: usize) -> bool {
+        ((*block).header.size >= size) && ((size % ALIGNMENT) == 0)
+    }
+
+    /// Check whether a block is free or not
+    unsafe fn is_free(block: BlockPointer) -> bool {
+        (*block).header.free
+    }
+
+    /// Return payload pointer from block address
+    unsafe fn block_to_payload(block: BlockPointer) -> *mut u8 {
+        ((block as usize) + HEADER_SIZE) as *mut u8
+    }
+
+    /// Return block address from payload address
+    unsafe fn payload_to_block(address: usize) -> BlockPointer {
+        (address - HEADER_SIZE) as BlockPointer
+    }
+
+    /// Add a memory region to the free list
+    unsafe fn free_list_add(&mut self, block_ptr: BlockPointer) {
+        // Mark block as free
+        (*block_ptr).header.free = true;
+
+        if self.free_list_head.is_null() {
+            // The free list is currently empty, so this is now the only block in the free list.
+            self.free_list_head = block_ptr;
+        } else {
+            // Add at free list head
+            let old_head = self.free_list_head;
+
+            // Update free list head
+            self.free_list_head = block_ptr;
+            (*self.free_list_head).free_node.next = old_head;
+            (*self.free_list_head).free_node.prev = core::ptr::null_mut();
+
+            // Update old head's previous
+            (*old_head).free_node.prev = self.free_list_head;
+        }
+    }
+
+    /// Re-interpret an address as a block pointer. Don't misuse this. 🙂
+    unsafe fn as_block_ptr(address: usize) -> BlockPointer {
+        address as BlockPointer
+    }
+    
+    /// Search the free list for a spot that fits
+    /// 
+    /// Returns a pointer to the block that we are going to allocate as well as its actual start address
+    unsafe fn search_free_list(&mut self, size: usize) -> Option<BlockPointer> {
+        // Use find first free
+        let mut curr = self.free_list_head;
+
+        // Search all free blocks
+        while !curr.is_null() {
+            // Check whether this meets size requirements
+            if Self::block_fits(curr, size) && Self::is_free(curr) {
+                // Block fits!
+                return Some(curr);
+            } else {
+                // Move curr forward
+                curr = (*curr).free_node.next;
+            }
+        }
+
+        // Could not find a fitting block
+        None
     }
 
     /// Align a layout to Block size 
@@ -138,77 +212,39 @@ impl Trollocator {
     /// Actual malloc function, because I cannot make global alloc work
     pub unsafe fn malloc(&mut self, layout: core::alloc::Layout) -> *mut u8 {
         let ptr = self.next_free;
-        let req_size = layout.size();
-        let req_align = layout.align();
 
-        if self.next_free as usize + req_size > self.heap_end() {
-            panic!("Out of memory!");
+        // Align layout to block size
+        let actual_layout = Self::align(layout);
+        let req_size = actual_layout.0;
+        let req_align = actual_layout.1;
+
+        // TODO: Actually allocate
+
+        if let Some(fitting_block) = self.search_free_list(req_size) {
+            // TODO: Severe oversimplification
+            return Self::block_to_payload(fitting_block);
+        } else {
+            return core::ptr::null_mut();
         }
+    }
 
-        self.next_free = (self.next_free as usize + req_size) as *mut u8;
+    pub unsafe fn free(&mut self, ptr: *mut u8) {
+        // First move back to block pointer
+        let block = Self::payload_to_block(ptr as usize);
 
-        ptr
+        // Now add to free list
+        self.free_list_add(block);
     }
 
 }
 
-unsafe impl GlobalAlloc for Trollocator {
-    /// Allocate a fully zeroed block. 
-    /// 
-    /// Roughly equivalent to calloc.
-    unsafe fn alloc_zeroed(&self, layout: core::alloc::Layout) -> *mut u8 {
-        
-        let size = layout.size();
+#[cfg(feature = "std")]
+use core::ops::Drop;
 
-        // SAFETY: the safety contract for `alloc` must be upheld by the caller.
-        let ptr = self.alloc(layout);
-        if !ptr.is_null() {
-            // SAFETY: as allocation succeeded, the region from `ptr`
-            // of size `size` is guaranteed to be valid for writes.
-            core::ptr::write_bytes(
-                ptr, 
-                0, 
-                size
-            );
-        }
-        
-        ptr
-    }
-
-    /// Reallocate a block given a new size.
-    unsafe fn realloc(&self, ptr: *mut u8, layout: core::alloc::Layout, new_size: usize) -> *mut u8 {
-
-        // SAFETY: the caller must ensure that the `new_size` does not overflow.
-        // `layout.align()` comes from a `Layout` and is thus guaranteed to be valid.
-        let new_layout = core::alloc::Layout::from_size_align_unchecked(new_size, layout.align());
-
-        // SAFETY: the caller must ensure that `new_layout` is greater than zero.
-        let new_ptr = self.alloc(new_layout);
-
-        if !new_ptr.is_null() {
-
-            // SAFETY: the previously allocated block cannot overlap the newly allocated block.
-            // The safety contract for `dealloc` must be upheld by the caller.
-            core::ptr::copy_nonoverlapping(
-                ptr, 
-                new_ptr, 
-                core::cmp::min(layout.size(), 
-                new_size)
-            );
-
-            self.dealloc(ptr, layout);
-        }
-
-        new_ptr
-    }
-
-    /// Allocate a block.
-    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        self.next_free
-    }
-
-    /// Deallocate a block.
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
-
+#[cfg(feature = "std")]
+impl Drop for Trollocator {
+    /// Drop should just call teardown
+    fn drop(&mut self) {
+        unsafe { self.heap_destroy(); }
     }
 }

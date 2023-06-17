@@ -13,6 +13,7 @@ pub mod allocator;
 #[cfg(test)]
 mod tests;
 
+use core::alloc::Layout;
 use allocator::*;
 
 /// Generates a random number using xorshift
@@ -24,4 +25,13 @@ fn xorshift(state: usize) -> usize {
     x ^= x >> 17;
     x ^= x << 5;
     x
+}
+
+/// Mallocs a block of the specified size using the given allocator.
+fn malloc(allocer: &mut Trollocator, size: usize) -> *mut u8 {
+    unsafe { allocer.malloc(Layout::from_size_align_unchecked(size, allocator::ALIGNMENT)) }
+}
+
+fn free(allocer: &mut Trollocator, ptr: *mut u8) {
+    unsafe { allocer.free(ptr); }
 }
