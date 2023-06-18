@@ -10,7 +10,7 @@ extern crate alloc;
 
 const HEADER_SIZE: usize = core::mem::size_of::<BlockHeader>();
 const MIN_BLOCK_SIZE: usize = core::mem::size_of::<Block>();
-const MAX_HEAP_SIZE: usize = 4096;
+const MAX_HEAP_SIZE: usize = 0x10000;
 pub(crate) const ALIGNMENT: usize = 8;
 
 // use libc::malloc;
@@ -25,6 +25,7 @@ extern "C" {
 
 type BlockPointer = *mut Block;
 
+#[repr(C)]
 /// Block header
 struct BlockHeader {
     /// Leasable size of this block
@@ -35,6 +36,7 @@ struct BlockHeader {
     free: bool,
 }
 
+#[repr(C)]
 /// Free list linkage pointers, overlaps payload space.
 struct FreeNode {
     /// Previous free block
@@ -43,6 +45,7 @@ struct FreeNode {
     next: BlockPointer,
 }
 
+#[repr(C)]
 /// Smallest unit of allocator
 pub struct Block {
     /// Header data, including size and pointer to previous block start.
@@ -119,11 +122,6 @@ impl Trollocator {
         // free(self.first_block as *mut u8);
     }
 
-    /// Coalesce around a block
-    fn coalesce(block: BlockPointer) {
-        todo!()
-    }
-
     /// Check whether a block fits a request size or not.
     unsafe fn block_fits(block: BlockPointer, size: usize) -> bool {
         ((*block).header.size >= size) && ((size % ALIGNMENT) == 0)
@@ -144,11 +142,27 @@ impl Trollocator {
         (address - HEADER_SIZE) as BlockPointer
     }
 
+    /// Get the next physical block from a block pointer
+    unsafe fn next_physical_block(block_ptr: BlockPointer) -> BlockPointer {
+        (block_ptr as usize + HEADER_SIZE + (*block_ptr).header.size) as BlockPointer
+    }
+
+    /// Remove a memory region from the free list
+    unsafe fn free_list_remove(&mut self, block_ptr: BlockPointer) {
+        let free_prev = (*block_ptr).free_node.prev;
+        let free_next = (*block_ptr).free_node.next;
+
+        if !free_prev.is_null() {
+            (*free_prev).free_node.next = free_next;
+        }
+
+        if !free_next.is_null() {
+            (*free_next).free_node.next = free_prev;
+        }
+    }
+
     /// Add a memory region to the free list
     unsafe fn free_list_add(&mut self, block_ptr: BlockPointer) {
-        // Mark block as free
-        (*block_ptr).header.free = true;
-
         if self.free_list_head.is_null() {
             // The free list is currently empty, so this is now the only block in the free list.
             self.free_list_head = block_ptr;
@@ -194,6 +208,39 @@ impl Trollocator {
         None
     }
 
+    /// Coalesce around a block
+    unsafe fn coalesce(&mut self, mut block: BlockPointer) {
+        // Check if the previous block is free. If so, coalesce into it
+        let prev_block = (*block).header.prev;
+
+        if !(*block).header.prev.is_null() && (*(*block).header.prev).header.free {          
+            // Make the previous block include current block's size (and header)
+            (*prev_block).header.size += HEADER_SIZE + (*block).header.size; 
+            // Remove the coalesced block from the free list
+            self.free_list_remove(block);
+            // Do not add the previous block, it was assumedly already in the free list.
+            // Move block pointer to previous block so that next if statement can coalesce both cases
+            block = prev_block;
+        }
+
+        // Get the next physical block
+        let next_block = Self::next_physical_block(block);
+
+        // Bail out if moved past end of heap
+        if next_block as usize >= self.heap_end() {
+            return;
+        }
+        
+        // Otherwise, attempt to coalesce this block too
+        if (*next_block).header.free {
+            // Coalesce the next block into us
+            (*block).header.size += HEADER_SIZE + (*next_block).header.size;
+
+            // Remove from free list
+            self.free_list_remove(next_block);
+        }
+    }
+
     /// Align a layout to Block size 
     /// 
     /// Returns a tuple of alignment size and alignment
@@ -204,24 +251,45 @@ impl Trollocator {
             .pad_to_align();
         
         (
-            lyt.size().max(mem::size_of::<Block>()),
+            lyt.size().max(mem::size_of::<FreeNode>()),
             lyt.align()
         )
     }
 
     /// Actual malloc function, because I cannot make global alloc work
     pub unsafe fn malloc(&mut self, layout: core::alloc::Layout) -> *mut u8 {
-        let ptr = self.next_free;
-
         // Align layout to block size
         let actual_layout = Self::align(layout);
         let req_size = actual_layout.0;
         let req_align = actual_layout.1;
 
-        // TODO: Actually allocate
-
+        // Actually allocate
         if let Some(fitting_block) = self.search_free_list(req_size) {
-            // TODO: Severe oversimplification
+            // Split block if possible
+            if ((*fitting_block).header.size - req_size) >= MIN_BLOCK_SIZE {
+                let original_size = (*fitting_block).header.size;
+                // Can split this block: This block is now clamped down to request size,
+                // remaining size is used for next block
+                (*fitting_block).header.size = req_size;
+
+                // Create a new block at the address after the size of the malloced block 
+                // (offset by the header size of the malloced block itself)
+                *(((fitting_block as usize) + req_size + HEADER_SIZE) as BlockPointer) = Block {
+                    header: BlockHeader { size: original_size - (req_size + HEADER_SIZE), prev: fitting_block, free: true },
+                    free_node: FreeNode { prev: core::ptr::null_mut(), next: core::ptr::null_mut() }
+                };
+
+                // Add this new block to the free list
+                self.free_list_add(((fitting_block as usize) + req_size + HEADER_SIZE) as BlockPointer);
+            }
+
+            // Remove this block from the free list
+            self.free_list_remove(fitting_block);
+
+            // Mark block allocated
+            (*fitting_block).header.free = false;
+
+            // Return the malloced block
             return Self::block_to_payload(fitting_block);
         } else {
             return core::ptr::null_mut();
@@ -232,8 +300,14 @@ impl Trollocator {
         // First move back to block pointer
         let block = Self::payload_to_block(ptr as usize);
 
+        // Mark block as free
+        (*block).header.free = true;
+
         // Now add to free list
         self.free_list_add(block);
+
+        // Coalesce this block
+        self.coalesce(block);
     }
 
 }
