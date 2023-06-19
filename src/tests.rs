@@ -97,4 +97,34 @@ mod tests {
         }
         unsafe { ALLOCATOR.heap_destroy(); }
     }
+
+    #[test]
+    fn realloc_works() {
+        let mut ALLOCATOR = Trollocator::new();
+        unsafe { ALLOCATOR.heap_init(); }
+
+        unsafe {
+            let bingus_ptr = malloc(&mut ALLOCATOR, 4 * core::mem::size_of::<u8>());
+            if bingus_ptr.is_null() {
+                assert!(false);
+            }
+            *bingus_ptr = 1u8;
+            *(bingus_ptr.offset(1)) = 2u8;
+            *(bingus_ptr.offset(2)) = 3u8;
+            *(bingus_ptr.offset(3)) = 4u8;
+
+            let bongus_ptr = realloc(&mut ALLOCATOR, bingus_ptr, 6 * core::mem::size_of::<u8>());
+            if bongus_ptr.is_null() {
+                assert!(false);
+            }
+            *(bongus_ptr.offset(4)) = 5u8;
+            *(bongus_ptr.offset(5)) = 6u8;
+
+            for i in 1..=6u8 {
+                assert_eq!(i, *(bongus_ptr.offset(i as isize - 1)));
+            }
+         }
+
+        unsafe { ALLOCATOR.heap_destroy(); }
+    }
 }

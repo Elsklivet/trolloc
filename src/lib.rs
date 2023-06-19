@@ -32,6 +32,16 @@ fn malloc(allocer: &mut Trollocator, size: usize) -> *mut u8 {
     unsafe { allocer.malloc(Layout::from_size_align_unchecked(size, allocator::ALIGNMENT)) }
 }
 
+/// Reallocates a block of memory to be the specified size.
+/// 
+/// The pointer argument must be the **exact** same pointer returned by `malloc`.
+fn realloc(allocer: &mut Trollocator, ptr: *mut u8, size: usize) -> *mut u8 {
+    unsafe { allocer.realloc(ptr, Layout::from_size_align_unchecked(size, allocator::ALIGNMENT))} 
+}
+
+/// Frees a block of memory using the given allocator. 
+/// 
+/// The pointer argument must be the **exact** same pointer returned by `malloc`.
 fn free(allocer: &mut Trollocator, ptr: *mut u8) {
     unsafe { allocer.free(ptr); }
 }

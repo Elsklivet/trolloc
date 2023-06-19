@@ -256,7 +256,7 @@ impl Trollocator {
         )
     }
 
-    /// Actual malloc function, because I cannot make global alloc work
+    /// Allocate a block of memory with the given layout.
     pub unsafe fn malloc(&mut self, layout: core::alloc::Layout) -> *mut u8 {
         // Align layout to block size
         let actual_layout = Self::align(layout);
@@ -296,6 +296,35 @@ impl Trollocator {
         }
     }
 
+    /// Reallocate a block of memory. The pointer argument must be the same pointer that `malloc` returned.
+    pub unsafe fn realloc(&mut self, ptr: *mut u8, layout: core::alloc::Layout) -> *mut u8 {
+        // The lazy way:
+        // 1. Malloc new block.
+        // 2. Copy old contents to new block.
+        // 3. Free old block.
+
+        // Get block
+        let block = Self::payload_to_block(ptr as usize);
+
+        let old_size = (*block).header.size;
+
+        let new_ptr = self.malloc(layout);
+        
+        if new_ptr.is_null() {
+            return core::ptr::null_mut();
+        }
+
+        // Copy old stuff over to new stuff
+        core::ptr::copy_nonoverlapping::<u8>(ptr, new_ptr, old_size);
+        
+        // Free old block
+        self.free(ptr);
+
+        // Return new block
+        new_ptr
+    }
+
+    /// Free a block of allocated memory. The argument must be the same pointer that `malloc` returned.
     pub unsafe fn free(&mut self, ptr: *mut u8) {
         // First move back to block pointer
         let block = Self::payload_to_block(ptr as usize);
