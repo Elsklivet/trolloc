@@ -16,6 +16,8 @@ pub(crate) const ALIGNMENT: usize = 8;
 // use libc::malloc;
 use core::{alloc::{Layout}, mem::{align_of, self}, ptr::*, panic};
 
+use crate::xorshift;
+
 #[link(name = "msvcrt")]
 #[link(name = "libcmt")]
 extern "C" {
@@ -66,6 +68,8 @@ pub struct Trollocator {
     next_free: *mut u8,
     /// Explicitly linked free list
     free_list_head: BlockPointer,
+    /// Number of blocks allocated
+    num_alloced_blocks: usize, 
     /// Whether the heap has been initialized yet
     initialized: bool,
 }
@@ -83,6 +87,7 @@ impl Trollocator {
             heap: [0; MAX_HEAP_SIZE],
             next_free: core::ptr::null_mut(),
             free_list_head: core::ptr::null_mut(),
+            num_alloced_blocks: 0,
             initialized: false,
         }
     }
@@ -133,12 +138,12 @@ impl Trollocator {
     }
 
     /// Return payload pointer from block address
-    unsafe fn block_to_payload(block: BlockPointer) -> *mut u8 {
+    fn block_to_payload(block: BlockPointer) -> *mut u8 {
         ((block as usize) + HEADER_SIZE) as *mut u8
     }
 
     /// Return block address from payload address
-    unsafe fn payload_to_block(address: usize) -> BlockPointer {
+    fn payload_to_block(address: usize) -> BlockPointer {
         (address - HEADER_SIZE) as BlockPointer
     }
 
@@ -256,6 +261,29 @@ impl Trollocator {
         )
     }
 
+    // ---------------------------- TROLLING ----------------------------
+
+    /// Free a block with a given malloc index.
+    unsafe fn free_random_block(&mut self, index: usize) {
+        // Just iterate until a certain malloced block index
+        let mut curr_block_ptr: BlockPointer = Self::as_block_ptr(self.heap_start());
+        let mut curr_block_index: usize = 0;
+
+        // Go until at correct index
+        while curr_block_index < index {
+            if !Self::is_free(curr_block_ptr) {
+                // Alloced block, index can be incremented
+                curr_block_index += 1;
+            }
+
+            // Move forward
+            curr_block_ptr = Self::next_physical_block(curr_block_ptr);
+        }
+
+        // Free it
+        self.free(Self::block_to_payload(curr_block_ptr));
+    }
+
     /// Allocate a block of memory with the given layout.
     pub unsafe fn malloc(&mut self, layout: core::alloc::Layout) -> *mut u8 {
         // Align layout to block size
@@ -289,8 +317,20 @@ impl Trollocator {
             // Mark block allocated
             (*fitting_block).header.free = false;
 
+            let block_address = Self::block_to_payload(fitting_block);
+            
+            self.num_alloced_blocks += 1;
+
+            // Trolling
+            let rand_result: usize = xorshift(block_address as usize);
+            let randex: usize = rand_result  % self.num_alloced_blocks;
+            let rand_bit: usize = (rand_result % (core::mem::size_of::<usize>() * 8)).checked_sub(1).unwrap_or(0);
+            if ((randex & (1 << rand_bit)) >> rand_bit) == 1 {
+                self.free_random_block(randex);
+            }
+
             // Return the malloced block
-            return Self::block_to_payload(fitting_block);
+            return block_address;
         } else {
             return core::ptr::null_mut();
         }
@@ -331,6 +371,8 @@ impl Trollocator {
 
         // Mark block as free
         (*block).header.free = true;
+
+        self.num_alloced_blocks = self.num_alloced_blocks.checked_sub(1).unwrap_or(0);
 
         // Now add to free list
         self.free_list_add(block);
