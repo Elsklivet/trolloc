@@ -10,6 +10,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod allocator;
+pub mod gjallocator;
 #[cfg(test)]
 mod tests;
 
