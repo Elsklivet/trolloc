@@ -235,6 +235,9 @@ impl Trollocator {
         if next_block as usize >= self.heap_end() {
             return;
         }
+
+        // In case we just coalesced the block behind us, make sure we're pointing to the right spot.
+        (*next_block).header.prev = block;
         
         // Otherwise, attempt to coalesce this block too
         if (*next_block).header.free {
