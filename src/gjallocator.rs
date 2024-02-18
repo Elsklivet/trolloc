@@ -96,7 +96,7 @@ impl Trollocator {
     /// Get the heap start
     pub fn heap_start(&self) -> usize {
         // First address of the internal heap is the heap start
-        self.heap.get() as usize
+        unsafe { (*self.get_metadata()).heap_start as usize }
     }
 
     /// Get the heap end
@@ -196,7 +196,7 @@ impl Trollocator {
         // Check if the previous block is free. If so, coalesce into it
         let prev_block = (*block).header.prev;
 
-        if !(*block).header.prev.is_null() && (*(*block).header.prev).header.free {          
+        if !prev_block.is_null() && (*prev_block).header.free {
             // Make the previous block include current block's size (and header)
             (*prev_block).header.size += HEADER_SIZE + (*block).header.size; 
             // Remove the coalesced block from the free list
@@ -213,6 +213,9 @@ impl Trollocator {
         if next_block as usize >= self.heap_end() {
             return;
         }
+
+        // In case we just coalesced the block behind us, make sure we're pointing to the right spot.
+        (*next_block).header.prev = block;
         
         // Otherwise, attempt to coalesce this block too
         if (*next_block).header.free {
@@ -237,6 +240,20 @@ impl Trollocator {
             lyt.size().max(mem::size_of::<FreeNode>()),
             lyt.align()
         )
+    }
+
+    /// Print the heap to stderr for debugging.
+    fn print_heap(&self) {
+        unsafe {
+            let mut curr_block_ptr: BlockPointer = Self::as_block_ptr(self.heap_start());
+            let mut curr_block_index: usize = 0;
+
+            while (curr_block_ptr as usize) < (self.heap_end()) {
+                eprintln!("--+ {} @ {:p} (size: {}, free: {})", curr_block_index, curr_block_ptr, (*curr_block_ptr).header.size, (*curr_block_ptr).header.free);
+                curr_block_ptr = Self::next_physical_block(curr_block_ptr);
+                curr_block_index += 1;
+            }
+        }
     }
 
     // ---------------------------- TROLLING ----------------------------
@@ -292,6 +309,7 @@ unsafe impl GlobalAlloc for Trollocator {
         let actual_layout = Self::align(layout);
         let req_size = actual_layout.0;
 
+
         // Actually allocate
         if let Some(fitting_block) = self.search_free_list(req_size) {
             // Split block if possible
@@ -330,6 +348,7 @@ unsafe impl GlobalAlloc for Trollocator {
             if ((randex & (1 << rand_bit)) >> rand_bit) == 1 {
                 let rand_block = self.random_block(randex);
                 // Get owned. You're owned. Trolled. You're trolled. You're owned and trolled.
+                eprintln!("--Trolling {:p}", rand_block);
                 self.dealloc(rand_block, layout);
             }
 
