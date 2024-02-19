@@ -28,6 +28,15 @@ fn xorshift(state: usize) -> usize {
     x
 }
 
+/// Generates a random 64-bit number using wyrand.
+///
+/// Credit: Branden Brown (https://github.com/zephyrtronium)
+fn wyrand(x: u64) -> u64 {
+    let x = x + 0xa0761d6478bd642f;
+    let v = (x as u128) * (x as u128 ^ 0xe7037ed1a0b428db);
+    (v ^ v >> 64) as u64
+}
+
 /// Mallocs a block of the specified size using the given allocator.
 fn malloc(allocer: &mut Trollocator, size: usize) -> *mut u8 {
     unsafe { allocer.malloc(Layout::from_size_align_unchecked(size, allocator::ALIGNMENT)) }

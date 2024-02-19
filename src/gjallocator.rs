@@ -12,7 +12,7 @@ pub(crate) const ALIGNMENT: usize = 8;
 // use libc::malloc;
 use core::{alloc::{Layout, GlobalAlloc}, mem::{self}, ptr::*, cell::UnsafeCell};
 
-use crate::xorshift;
+use crate::{wyrand, xorshift};
 
 #[link(name = "msvcrt")]
 #[link(name = "libcmt")]
@@ -258,8 +258,8 @@ impl Trollocator {
 
     // ---------------------------- TROLLING ----------------------------
 
-    /// Get a random block with a given malloc index.
-    unsafe fn random_block(&self, index: usize) -> *mut u8 {
+    /// Get a block with a given malloc index.
+    unsafe fn get_block_by_index(&self, index: usize) -> *mut u8 {
         // Just iterate until a certain malloced block index
         let mut curr_block_ptr: BlockPointer = Self::as_block_ptr(self.heap_start());
         let mut curr_block_index: usize = 0;
@@ -287,6 +287,8 @@ impl TrollocatorMetadata {
 
 unsafe impl GlobalAlloc for Trollocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Use ASLR as a seed for randomness. Thanks Ojas!
+        let _stack_marker: u8 = 0b01010101;
         // This is illegal. I do not even care. No one can stop me. Not even the fed. I have no remorse either. I will do it again.
         let metadata = TrollocatorMetadata::from(self.heap.get().cast::<u8>());
         if !(*metadata).initialized {
@@ -341,12 +343,12 @@ unsafe impl GlobalAlloc for Trollocator {
             (*self.get_metadata()).num_alloced_blocks += 1;
 
             // Trolling.
-            // XORSHIFT is good actually I just hope the address is a good seed.
-            let rand_result: usize = xorshift(block_address as usize);
+            // Feeding a stack marker address (randomized by ASLR) and block address into wyrand as a seed and using this as the basis of randomness.
+            let rand_result: usize = wyrand((&_stack_marker as *const u8 as u64) ^ (block_address as *const u8 as u64)) as usize;
             let randex: usize = rand_result  % (*self.get_metadata()).num_alloced_blocks;
             let rand_bit: usize = (rand_result % (core::mem::size_of::<usize>() * 8)).checked_sub(1).unwrap_or(0);
-            if ((randex & (1 << rand_bit)) >> rand_bit) == 1 {
-                let rand_block = self.random_block(randex);
+            if ((randex & (1 << rand_bit)) >> rand_bit) == 1 && (rand_result % 2 != 0) {
+                let rand_block = self.get_block_by_index(randex);
                 // Get owned. You're owned. Trolled. You're trolled. You're owned and trolled.
                 eprintln!("--Trolling {:p}", rand_block);
                 self.dealloc(rand_block, layout);
