@@ -61,6 +61,7 @@ mod tests {
 
                 *bingus = cnt as u8; // first byte of count
                 assert_eq!(cnt as u8, *bingus);
+                free(&mut ALLOCATOR, bingus);
             }
         }
         unsafe { ALLOCATOR.heap_destroy(); }

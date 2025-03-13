@@ -1,25 +1,14 @@
-#[cfg(feature = "std")]
-extern crate core;
+// ˈjɒloˌkeɪtɜr
 
-#[cfg(feature = "alloc")]
-extern crate alloc;
-
+const TROLLING_ON: bool = true;
 const HEADER_SIZE: usize = core::mem::size_of::<BlockHeader>();
 const MIN_BLOCK_SIZE: usize = core::mem::size_of::<Block>();
-const MAX_HEAP_SIZE: usize = 0x10000;
+const MAX_HEAP_SIZE: usize = 0x100000;
 pub(crate) const ALIGNMENT: usize = 8;
 
-// use libc::malloc;
-use core::{alloc::{Layout, GlobalAlloc}, mem::{self}, ptr::*, cell::UnsafeCell};
+use core::{alloc::{Layout, GlobalAlloc}, mem::{self}, cell::UnsafeCell};
 
-use crate::{wyrand, xorshift};
-
-#[link(name = "msvcrt")]
-#[link(name = "libcmt")]
-extern "C" {
-    pub fn malloc(size: usize) -> *mut u8;
-    pub fn free(ptr: *mut u8);
-}
+use crate::wyrand;
 
 type BlockPointer = *mut Block;
 
@@ -69,7 +58,7 @@ pub struct TrollocatorMetadata {
     initialized: bool,
 }
 
-#[repr(C)]
+#[repr(align(8))]
 pub struct Trollocator {
     heap: UnsafeCell<[u8; MAX_HEAP_SIZE]>,
 }
@@ -243,7 +232,7 @@ impl Trollocator {
     }
 
     /// Print the heap to stderr for debugging.
-    fn print_heap(&self) {
+    pub fn print_heap(&self) {
         unsafe {
             let mut curr_block_ptr: BlockPointer = Self::as_block_ptr(self.heap_start());
             let mut curr_block_index: usize = 0;
@@ -343,15 +332,16 @@ unsafe impl GlobalAlloc for Trollocator {
             (*self.get_metadata()).num_alloced_blocks += 1;
 
             // Trolling.
-            // Feeding a stack marker address (randomized by ASLR) and block address into wyrand as a seed and using this as the basis of randomness.
-            let rand_result: usize = wyrand((&_stack_marker as *const u8 as u64) ^ (block_address as *const u8 as u64)) as usize;
-            let randex: usize = rand_result  % (*self.get_metadata()).num_alloced_blocks;
-            let rand_bit: usize = (rand_result % (core::mem::size_of::<usize>() * 8)).checked_sub(1).unwrap_or(0);
-            if ((randex & (1 << rand_bit)) >> rand_bit) == 1 && (rand_result % 2 != 0) {
-                let rand_block = self.get_block_by_index(randex);
-                // Get owned. You're owned. Trolled. You're trolled. You're owned and trolled.
-                eprintln!("--Trolling {:p}", rand_block);
-                self.dealloc(rand_block, layout);
+            if TROLLING_ON { 
+                // Feeding a stack marker address (randomized by ASLR) and block address into wyrand as a seed and using this as the basis of randomness.
+                let rand_result: usize = wyrand((&_stack_marker as *const u8 as u64) ^ (block_address as *const u8 as u64)) as usize;
+                let randex: usize = rand_result  % (*self.get_metadata()).num_alloced_blocks;
+                let rand_bit: usize = (rand_result % (core::mem::size_of::<usize>() * 8)).checked_sub(1).unwrap_or(0);
+                if ((randex & (1 << rand_bit)) >> rand_bit) == 1 {
+                    let rand_block = self.get_block_by_index(randex);
+                    // Get owned. You're owned. Trolled. You're trolled. You're owned and trolled.
+                    self.dealloc(rand_block, layout);
+                }
             }
 
             // Return the malloced block

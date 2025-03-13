@@ -1,6 +1,7 @@
 // Based partially on Philipp Oppermann's 
 // blog post on Rust memory allocators:
 // https://os.phil-opp.com/allocator-designs/#implementation-1
+// This allocator is outdated. Use Gjallocator instead.
 
 #[cfg(feature = "std")]
 extern crate core;
@@ -17,13 +18,6 @@ pub(crate) const ALIGNMENT: usize = 8;
 use core::{alloc::{Layout}, mem::{align_of, self}, ptr::*, panic};
 
 use crate::xorshift;
-
-#[link(name = "msvcrt")]
-#[link(name = "libcmt")]
-extern "C" {
-    pub fn malloc(size: usize) -> *mut u8;
-    pub fn free(ptr: *mut u8);
-}
 
 type BlockPointer = *mut Block;
 
