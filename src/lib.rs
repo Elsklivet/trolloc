@@ -31,6 +31,7 @@ fn xorshift(state: usize) -> usize {
 /// Generates a random 64-bit number using wyrand.
 ///
 /// Credit: Branden Brown (https://github.com/zephyrtronium)
+///         Wang Yi (https://github.com/wangyi-fudan/wyhash)
 fn wyrand(x: u64) -> u64 {
     let x = x + 0xa0761d6478bd642f;
     let v = (x as u128) * (x as u128 ^ 0xe7037ed1a0b428db);
