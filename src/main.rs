@@ -6,7 +6,6 @@ static mut ALLOCATOR: Trollocator = Trollocator::new();
 fn main() {
     let _s = format!("hello world");
     println!("{}", _s);
-    unsafe { println!("{}", ALLOCATOR.get_alloced_blocks()) };
 
     let mut vec = vec![0u8];
 
@@ -21,9 +20,5 @@ fn main() {
     let _s2 = format!("hello world 2");
     println!("{}", _s2);
 
-    unsafe { println!("{}", ALLOCATOR.get_alloced_blocks()) };
-
     core::mem::drop(vec);
-
-    unsafe { println!("{}", ALLOCATOR.get_alloced_blocks()) };
 }

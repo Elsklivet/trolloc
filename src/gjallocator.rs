@@ -1,4 +1,39 @@
-// ˈjɒloˌkeɪtɜr
+//! # Gjallocator
+//! /ˈjɒloˌkeɪtɜr/ or /ˈgjæləˌkeɪtɜr/
+//! 
+//! The current reference implementation of the *Trolloc* project.
+//! 
+//! This implementation satisfies (for better or, more likely, for worse) the requirements of
+//! the [`GlobalAlloc`](core::alloc::GlobalAlloc) trait, which allows it to be used as a
+//! memory allocator for any Rust program.
+//! 
+//! The implementation is relatively simple. Trolloc features:
+//! - An explicit, doubly-linked free block list.
+//! - First-fit search algorithm.
+//! - A statically-allocated heap, with heap metadata contained at the head of the heap.
+//!     - **Note:** An erratum in the writeup mentions that this is a stack-based heap, it is not, anymore. That is true for [`allocator`](crate::allocator).
+//! - Free block coalescence.
+//! - Block splitting, to reduce fragmentation.
+//! - Wasting an entire 8-bit boolean in block metadata to mark a block freewhen 1 bit would suffice, to increase fragmentation.
+//! 
+//! The trolling algorithm is boringly simple. Essentially, the `alloc` function does the
+//! following to troll users:
+//! - Leave a stack marker variable at the top of the function. ASLR will randomize the address of this variable.
+//! - Use the marker's address as a seed to PRNG, [`wyrand`](crate::wyrand). This used to use [`xorshift`](crate::xorshift), but it was bad.
+//! - Generate a random number with [`wyrand`](crate::wyrand) and use this to determine an allocated block to free.
+//! - If some conditions are met, free that block before returning the allocated block.
+//! 
+//! Note that the trolling algorithm doesn't actually run if a fitting block to allocate
+//! cannot be found.
+//! 
+//! Other things to consider:
+//! - This implementation requires horribly misusing types, forcefully reinterpreting
+//! values all over the place in order to achieve its evil ends.
+//! - In order to make unsafe reinterpret casts actually work, everything is repr(C).
+//! - The whole implementation is just a bunch of unsafe and unchecked pointer stuff, really.
+//! 
+//! In spite of all that, if you remove the trolling algorithm, this should theoretically
+//! work as an allocator for small applications that prefer horribly unoptimized allocators.
 
 const TROLLING_ON: bool = true;
 const HEADER_SIZE: usize = core::mem::size_of::<BlockHeader>();
@@ -13,52 +48,55 @@ use crate::wyrand;
 type BlockPointer = *mut Block;
 
 #[repr(C)]
-/// Block header
+/// Block header.
 struct BlockHeader {
-    /// Leasable size of this block
+    /// Leasable size of this block.
     size: usize,
-    /// Pointer to previous physical block
+    /// Pointer to previous physical block.
     prev: BlockPointer,
-    /// Whether block is currently free
+    /// Whether block is currently free.
     free: bool,
 }
 
 #[repr(C)]
 /// Free list linkage pointers, overlaps payload space.
 struct FreeNode {
-    /// Previous free block
+    /// Previous free block.
     prev: BlockPointer,
-    /// Next free block
+    /// Next free block.
     next: BlockPointer,
 }
 
 #[repr(C)]
-/// Smallest unit of allocator
+/// Smallest unit of allocator.
 pub struct Block {
     /// Header data, including size and pointer to previous block start.
     header: BlockHeader,
-    /// Pointers for free blocks
+    /// Pointers for free blocks.
     free_node: FreeNode,
 }
 
-// Size = 48 bytes, align 8 bytes
+/// Metadata heading for the heap.
+/// 
+/// Size = 48 bytes, align 8 bytes.
 #[repr(C)]
 pub struct TrollocatorMetadata {
-    /// Size of the heap in bytes
+    /// Size of the heap in bytes.
     heap_size: usize,
-    /// First block in the heap
+    /// First block in the heap.
     heap_start: *mut u8,
-    /// Pointer to the next free space
+    /// Pointer to the next free space.
     next_free: *mut u8,
-    /// Explicitly linked free list
+    /// Explicitly linked free list.
     free_list_head: BlockPointer,
-    /// Number of blocks allocated
+    /// Number of blocks allocated.
     num_alloced_blocks: usize, 
-    /// Whether the heap has been initialized yet
+    /// Whether the heap has been initialized yet.
     initialized: bool,
 }
 
 #[repr(align(8))]
+/// The allocator.
 pub struct Trollocator {
     heap: UnsafeCell<[u8; MAX_HEAP_SIZE]>,
 }
@@ -67,28 +105,30 @@ unsafe impl Sync for Trollocator {}
 unsafe impl Send for Trollocator {}
 
 impl Trollocator {
+    /// Create a new allocator.
     pub const fn new() -> Self {
         Self {
             heap: UnsafeCell::new([0; MAX_HEAP_SIZE]),
         }
     }
 
-    /// Get metadata by just interpreting the heap as a metadata pointer because who cares
+    /// Get metadata by just interpreting the heap as a metadata pointer because who cares.
     const fn get_metadata(&self) -> *mut TrollocatorMetadata {
         TrollocatorMetadata::from(self.heap.get().cast::<u8>())
     }
 
+    /// Get the number of leased blocks.
     pub fn get_alloced_blocks(&self) -> usize {
         unsafe { (*self.get_metadata()).num_alloced_blocks }
     }
 
-    /// Get the heap start
+    /// Get the heap start as a raw address.
     pub fn heap_start(&self) -> usize {
         // First address of the internal heap is the heap start
         unsafe { (*self.get_metadata()).heap_start as usize }
     }
 
-    /// Get the heap end
+    /// Get the heap end as a raw address.
     pub fn heap_end(&self) -> usize {
         // Last address is first + size
         self.heap_start() + MAX_HEAP_SIZE
@@ -99,27 +139,27 @@ impl Trollocator {
         ((*block).header.size >= size) && ((size % ALIGNMENT) == 0)
     }
 
-    /// Check whether a block is free or not
+    /// Check whether a block is free or not.
     unsafe fn is_free(block: BlockPointer) -> bool {
         (*block).header.free
     }
 
-    /// Return payload pointer from block address
+    /// Return payload pointer from block address.
     fn block_to_payload(block: BlockPointer) -> *mut u8 {
         ((block as usize) + HEADER_SIZE) as *mut u8
     }
 
-    /// Return block address from payload address
+    /// Return block address from payload address.
     fn payload_to_block(address: usize) -> BlockPointer {
         (address - HEADER_SIZE) as BlockPointer
     }
 
-    /// Get the next physical block from a block pointer
+    /// Get the next physical block from a block pointer.
     unsafe fn next_physical_block(block_ptr: BlockPointer) -> BlockPointer {
         (block_ptr as usize + HEADER_SIZE + (*block_ptr).header.size) as BlockPointer
     }
 
-    /// Remove a memory region from the free list
+    /// Remove a memory region from the free list.
     unsafe fn free_list_remove(&self, block_ptr: BlockPointer) {
         let free_prev = (*block_ptr).free_node.prev;
         let free_next = (*block_ptr).free_node.next;
@@ -133,7 +173,7 @@ impl Trollocator {
         }
     }
 
-    /// Add a memory region to the free list
+    /// Add a memory region to the free list.
     unsafe fn free_list_add(&self, block_ptr: BlockPointer) {
         if (*self.get_metadata()).free_list_head.is_null() {
             // The free list is currently empty, so this is now the only block in the free list.
@@ -157,9 +197,9 @@ impl Trollocator {
         address as BlockPointer
     }
     
-    /// Search the free list for a spot that fits
+    /// Search the free list for a spot that fits.
     /// 
-    /// Returns a pointer to the block that we are going to allocate as well as its actual start address
+    /// Returns a pointer to the block that we are going to allocate as well as its actual start address.
     unsafe fn search_free_list(&self, size: usize) -> Option<BlockPointer> {
         // Use find first free
         let mut curr = (*self.get_metadata()).free_list_head;
@@ -180,7 +220,7 @@ impl Trollocator {
         None
     }
 
-    /// Coalesce around a block
+    /// Coalesce around a block.
     unsafe fn coalesce(&self, mut block: BlockPointer) {
         // Check if the previous block is free. If so, coalesce into it
         let prev_block = (*block).header.prev;
@@ -216,9 +256,9 @@ impl Trollocator {
         }
     }
 
-    /// Align a layout to Block size 
+    /// Align a layout to Block size.
     /// 
-    /// Returns a tuple of alignment size and alignment
+    /// Returns a tuple of alignment size and alignment.
     fn align(layout: Layout) -> (usize, usize) {
         let lyt = layout
             .align_to(mem::align_of::<Block>())
@@ -269,12 +309,14 @@ impl Trollocator {
 }
 
 impl TrollocatorMetadata {
+    /// Reinterpret the beginning of the heap as a metadata struct.
     const fn from(heap: *mut u8) -> *mut Self {
         heap as *mut TrollocatorMetadata
     }
 }
 
 unsafe impl GlobalAlloc for Trollocator {
+    /// Allocate a block based on the given layout. Absolutely no funny business here.
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // Use ASLR as a seed for randomness. Thanks Ojas!
         let _stack_marker: u8 = 0b01010101;
@@ -351,6 +393,7 @@ unsafe impl GlobalAlloc for Trollocator {
         }
     }
 
+    /// Free a block previously allocated with [`alloc`].
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         // Notice that I do not care what layout you requested. It is meaningless to me. Like an ant. Like a little menial ant.
 
@@ -371,6 +414,7 @@ unsafe impl GlobalAlloc for Trollocator {
 
     // I let the functions below just get auto-generated by VS Code.
 
+    /// Allocate a block and fill it with zeroes, for some reason.
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let size = layout.size();
         // SAFETY: the safety contract for `alloc` must be upheld by the caller. it will not be.
@@ -382,6 +426,7 @@ unsafe impl GlobalAlloc for Trollocator {
         ptr
     }
 
+    /// Reallocate a block. No guarantee this will work.
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         // SAFETY: the caller must ensure that the `new_size` does not overflow.
         // `layout.align()` comes from a `Layout` and is thus guaranteed to be valid.

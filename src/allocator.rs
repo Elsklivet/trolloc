@@ -3,6 +3,18 @@
 // https://os.phil-opp.com/allocator-designs/#implementation-1
 // This allocator is outdated. Use Gjallocator instead.
 
+//! # Trolloc Allocator
+//! 
+//! <div class="warning">
+//! 
+//! This file is **deprecated**. Prefer [`gjallocator`](crate::gjallocator).
+//! 
+//! </div>
+//! 
+//! Original prototype implementation of the *Trolloc* allocator project.
+
+#![deprecated]
+
 #[cfg(feature = "std")]
 extern crate core;
 
@@ -14,7 +26,6 @@ const MIN_BLOCK_SIZE: usize = core::mem::size_of::<Block>();
 const MAX_HEAP_SIZE: usize = 0x10000;
 pub(crate) const ALIGNMENT: usize = 8;
 
-// use libc::malloc;
 use core::{alloc::{Layout}, mem::{align_of, self}, ptr::*, panic};
 
 use crate::xorshift;
@@ -22,49 +33,49 @@ use crate::xorshift;
 type BlockPointer = *mut Block;
 
 #[repr(C)]
-/// Block header
+/// Block header.
 struct BlockHeader {
-    /// Leasable size of this block
+    /// Leasable size of this block.
     size: usize,
-    /// Pointer to previous physical block
+    /// Pointer to previous physical block.
     prev: BlockPointer,
-    /// Whether block is currently free
+    /// Whether block is currently free.
     free: bool,
 }
 
 #[repr(C)]
 /// Free list linkage pointers, overlaps payload space.
 struct FreeNode {
-    /// Previous free block
+    /// Previous free block.
     prev: BlockPointer,
-    /// Next free block
+    /// Next free block.
     next: BlockPointer,
 }
 
 #[repr(C)]
-/// Smallest unit of allocator
+/// Smallest unit of allocator.
 pub struct Block {
     /// Header data, including size and pointer to previous block start.
     header: BlockHeader,
-    /// Pointers for free blocks
+    /// Pointers for free blocks.
     free_node: FreeNode,
 }
 
-/// Core allocator struct
+/// Core allocator struct.
 ///
 /// Represents an instance of the troll allocator. Supports all basic memory allocator functions.
 pub struct Trollocator {
-    /// Size of the heap in bytes
+    /// Size of the heap in bytes.
     heap_size: usize,
-    /// First block in the heap
+    /// First block in the heap.
     heap: [u8; MAX_HEAP_SIZE],
-    /// Pointer to the next free space
+    /// Pointer to the next free space.
     next_free: *mut u8,
-    /// Explicitly linked free list
+    /// Explicitly linked free list.
     free_list_head: BlockPointer,
-    /// Number of blocks allocated
+    /// Number of blocks allocated.
     num_alloced_blocks: usize, 
-    /// Whether the heap has been initialized yet
+    /// Whether the heap has been initialized yet.
     initialized: bool,
 }
 
@@ -72,7 +83,7 @@ unsafe impl Sync for Trollocator {}
 unsafe impl Send for Trollocator {}
 
 impl Trollocator {
-    /// Instantiate a new Trollocator
+    /// Instantiate a new Trollocator.
     ///
     /// Returns a trollocator instance with a zero heap size, no first block, and an empty free list.
     pub const fn new() -> Self {
@@ -86,19 +97,19 @@ impl Trollocator {
         }
     }
 
-    /// Get the heap start
+    /// Get the heap start.
     pub fn heap_start(&self) -> usize {
-        // First address of the internal heap is the heap start
+        // First address of the internal heap is the heap start.
         self.heap.as_ptr() as usize
     }
 
-    /// Get the heap end
+    /// Get the heap end.
     pub fn heap_end(&self) -> usize {
         // Last address is first + size
         self.heap_start() + self.heap_size
     }
 
-    /// Initialize the heap
+    /// Initialize the heap.
     pub unsafe fn heap_init(&mut self) { 
         // Initialize heap
         self.initialized = true;
@@ -116,7 +127,7 @@ impl Trollocator {
         self.next_free = self.heap.as_mut_ptr();
     }
 
-    /// Heap teardown
+    /// Heap teardown.
     pub unsafe fn heap_destroy(&mut self) {
         // free(self.first_block as *mut u8);
     }
@@ -126,27 +137,27 @@ impl Trollocator {
         ((*block).header.size >= size) && ((size % ALIGNMENT) == 0)
     }
 
-    /// Check whether a block is free or not
+    /// Check whether a block is free or not.
     unsafe fn is_free(block: BlockPointer) -> bool {
         (*block).header.free
     }
 
-    /// Return payload pointer from block address
+    /// Return payload pointer from block address.
     fn block_to_payload(block: BlockPointer) -> *mut u8 {
         ((block as usize) + HEADER_SIZE) as *mut u8
     }
 
-    /// Return block address from payload address
+    /// Return block address from payload address.
     fn payload_to_block(address: usize) -> BlockPointer {
         (address - HEADER_SIZE) as BlockPointer
     }
 
-    /// Get the next physical block from a block pointer
+    /// Get the next physical block from a block pointer.
     unsafe fn next_physical_block(block_ptr: BlockPointer) -> BlockPointer {
         (block_ptr as usize + HEADER_SIZE + (*block_ptr).header.size) as BlockPointer
     }
 
-    /// Remove a memory region from the free list
+    /// Remove a memory region from the free list.
     unsafe fn free_list_remove(&mut self, block_ptr: BlockPointer) {
         let free_prev = (*block_ptr).free_node.prev;
         let free_next = (*block_ptr).free_node.next;
@@ -160,7 +171,7 @@ impl Trollocator {
         }
     }
 
-    /// Add a memory region to the free list
+    /// Add a memory region to the free list.
     unsafe fn free_list_add(&mut self, block_ptr: BlockPointer) {
         if self.free_list_head.is_null() {
             // The free list is currently empty, so this is now the only block in the free list.
@@ -184,9 +195,9 @@ impl Trollocator {
         address as BlockPointer
     }
     
-    /// Search the free list for a spot that fits
+    /// Search the free list for a spot that fits.
     /// 
-    /// Returns a pointer to the block that we are going to allocate as well as its actual start address
+    /// Returns a pointer to the block that we are going to allocate as well as its actual start address.
     unsafe fn search_free_list(&mut self, size: usize) -> Option<BlockPointer> {
         // Use find first free
         let mut curr = self.free_list_head;
@@ -207,7 +218,7 @@ impl Trollocator {
         None
     }
 
-    /// Coalesce around a block
+    /// Coalesce around a block.
     unsafe fn coalesce(&mut self, mut block: BlockPointer) {
         // Check if the previous block is free. If so, coalesce into it
         let prev_block = (*block).header.prev;
@@ -243,9 +254,9 @@ impl Trollocator {
         }
     }
 
-    /// Align a layout to Block size 
+    /// Align a layout to [Block] size.
     /// 
-    /// Returns a tuple of alignment size and alignment
+    /// Returns a tuple of alignment size and alignment.
     fn align(layout: Layout) -> (usize, usize) {
         let lyt = layout
             .align_to(mem::align_of::<Block>())
@@ -260,7 +271,7 @@ impl Trollocator {
 
     // ---------------------------- TROLLING ----------------------------
 
-    /// Free a block with a given malloc index.
+    /// Free a [Block] with a given malloc index.
     unsafe fn free_random_block(&mut self, index: usize) {
         // Just iterate until a certain malloced block index
         let mut curr_block_ptr: BlockPointer = Self::as_block_ptr(self.heap_start());
@@ -281,7 +292,7 @@ impl Trollocator {
         self.free(Self::block_to_payload(curr_block_ptr));
     }
 
-    /// Allocate a block of memory with the given layout.
+    /// Allocate a [Block] of memory with the given layout.
     pub unsafe fn malloc(&mut self, layout: core::alloc::Layout) -> *mut u8 {
         // Align layout to block size
         let actual_layout = Self::align(layout);
@@ -333,7 +344,7 @@ impl Trollocator {
         }
     }
 
-    /// Reallocate a block of memory. The pointer argument must be the same pointer that `malloc` returned.
+    /// Reallocate a [Block] of memory. The pointer argument must be the same pointer that [`malloc`](crate::malloc) returned.
     pub unsafe fn realloc(&mut self, ptr: *mut u8, layout: core::alloc::Layout) -> *mut u8 {
         // The lazy way:
         // 1. Malloc new block.
@@ -385,7 +396,7 @@ use core::ops::Drop;
 
 #[cfg(feature = "std")]
 impl Drop for Trollocator {
-    /// Drop should just call teardown
+    /// Drop should just call [teardown](crate::allocator::Trollocator::heap_destroy).
     fn drop(&mut self) {
         unsafe { self.heap_destroy(); }
     }
